@@ -102,9 +102,11 @@ grammar =
   # is one. Blocks serve as the building blocks of many other rules, making
   # them somewhat circular.
   Expression: [
+    o 'Await'
     o 'Value'
     o 'Invocation'
     o 'Code'
+    o 'AsyncCode'
     o 'Operation'
     o 'Assign'
     o 'If'
@@ -115,6 +117,12 @@ grammar =
     o 'Class'
     o 'Throw'
   ]
+
+  Await: [
+    o 'AWAIT Expression',                       -> new Await $2
+  ]
+
+
 
   # An indented block of expressions. Note that the [Rewriter](rewriter.html)
   # will convert some postfix forms into blocks for us, by adjusting the
@@ -188,6 +196,15 @@ grammar =
   Code: [
     o 'PARAM_START ParamList PARAM_END FuncGlyph Block', -> new Code $2, $5, $4
     o 'FuncGlyph Block',                        -> new Code [], $2, $1
+  ]
+
+  # Async: [
+  #   o 'ASYNC'
+  # ]
+
+  AsyncCode: [
+    o 'ASYNC PARAM_START ParamList PARAM_END FuncGlyph Block', -> new AsyncCode $3, $6, $5
+    o 'ASYNC FuncGlyph Block',                        -> new AsyncCode [], $3, $2
   ]
 
   # CoffeeScript has two different symbols for functions. `->` is for ordinary
@@ -590,10 +607,11 @@ operators = [
   ['left',      'COMPARE']
   ['left',      'LOGIC']
   ['nonassoc',  'INDENT', 'OUTDENT']
-  ['right',     '=', ':', 'COMPOUND_ASSIGN', 'RETURN', 'THROW', 'EXTENDS']
+  ['right',     '=', ':', 'COMPOUND_ASSIGN', 'RETURN', 'THROW', 'EXTENDS', 'ASYNC']
   ['right',     'FORIN', 'FOROF', 'BY', 'WHEN']
   ['right',     'IF', 'ELSE', 'FOR', 'WHILE', 'UNTIL', 'LOOP', 'SUPER', 'CLASS']
   ['right',     'POST_IF']
+  ['right',     'AWAIT']
 ]
 
 # Wrapping Up

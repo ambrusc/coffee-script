@@ -57,6 +57,12 @@ exports.Base = class Base
   compile: (o, lvl) ->
     fragmentsToText @compileToFragments o, lvl
 
+  @asyncNodes: []
+  asyncTransform: () ->
+    for n in Base.asyncNodes
+      n.asyncTransform()
+    return this
+
   # Common logic for determining whether to wrap this node in a closure before
   # compiling it, or to compile directly. We need to wrap if this node is a
   # *statement*, and it's not a *pureStatement*, and we're not at
@@ -201,6 +207,13 @@ exports.Base = class Base
       answer = answer.concat fragments
     answer
 
+  hasAwait: () ->
+    ret = false
+    @traverseChildren(false, (c) ->
+      ret |= (c instanceof Await)
+    )
+    return Boolean(ret)
+
 #### Block
 
 # The block is the list of expressions that forms the body of an
@@ -214,6 +227,7 @@ exports.Block = class Block extends Base
 
   # Tack an expression on to the end of this expression list.
   push: (node) ->
+    console.log "pushing #{node.constructor.name}"
     @expressions.push node
     this
 
@@ -1353,6 +1367,167 @@ exports.Code = class Code extends Base
   # unless `crossScope` is `true`.
   traverseChildren: (crossScope, func) ->
     super(crossScope, func) if crossScope
+
+#### Code
+
+# A function definition. This is the only node that creates a new Scope.
+# When for the purposes of walking the contents of a function body, the Code
+# has no *children* -- they're within the inner scope.
+exports.AsyncCode = class AsyncCode extends Code
+  constructor: (params, body, tag) ->
+    @params  = params or []
+    @body    = body or new Block
+    @bound   = tag is 'boundfunc'
+    @context = '_this' if @bound
+    AsyncCode.asyncNodes.push(this)
+    @scopevars = []
+
+  asyncTransform: () ->
+    console.log "Transforming async node"
+
+    # Pull all of the variables out to the block scope
+    @body.traverseChildren(false, (c) =>
+      if c instanceof Assign and 
+         c.variable instanceof Value and 
+         c.variable.base instanceof Literal
+        @scopevars.push(c.variable.base.value)
+    )
+
+    ret = []
+    current_node = ret
+    current_promise = null
+    nodes = @body.expressions
+    console.log nodes.map((n) -> n.constructor.name)
+    while nodes.length
+      node = nodes.shift()
+      isAwaited = node.hasAwait()
+      if isAwaited
+        if node instanceof Await
+          if current_promise
+            current_promise = new Value(current_promise)
+            current_node.push(node.args)
+          else
+            current_promise = new Value(node.args)
+          current_promise.add(new Access(new Literal("then")))
+          current_node = new Block([])
+          current_promise = new Call(
+            current_promise,
+            [new Code([], current_node)]
+          )
+        else if node instanceof Assign and node.value instanceof Await
+          if current_promise
+            current_promise = new Value(current_promise)
+            current_node.push(node.value.args)
+          else
+            if node.value.args instanceof Value
+              current_promise = node.value.args
+            else
+              current_promise = new Value(node.value.args)
+          current_promise.add(new Access(new Literal("then")))
+          current_node = new Block([new Assign(node.variable, new Value(new Literal("_#{node.variable.base.value}_")))])
+          current_promise = new Call(
+            current_promise,
+            [new Code([new Param(new Literal("_#{node.variable.base.value}_"))], current_node)]
+          )
+        else
+          throw new Error("No complex flow control yet")
+      else
+        current_node.push(node)
+    if current_promise
+      ret.push(current_promise)
+    @body.expressions = ret
+
+
+  # Compilation creates a new scope unless explicitly asked to share with the
+  # outer scope. Handles splat parameters in the parameter list by peeking at
+  # the JavaScript `arguments` object. If the function is bound with the `=>`
+  # arrow, generates a wrapper that saves the current value of `this` through
+  # a closure.
+  compileNode: (o) ->
+    o.scope         = new Scope o.scope, @body, this
+    o.scope.shared  = del(o, 'sharedScope')
+    o.indent        += TAB
+    delete o.bare
+    delete o.isExistentialEquals
+    params = []
+    exprs  = []
+
+    # pull out all async variables
+    for varname in @scopevars
+      o.scope.find(varname)
+
+    @eachParamName (name) -> # this step must be performed before the others
+      unless o.scope.check name then o.scope.parameter name
+    for param in @params when param.splat
+      for {name: p} in @params
+        if p.this then p = p.properties[0].name
+        if p.value then o.scope.add p.value, 'var', yes
+      splats = new Assign new Value(new Arr(p.asReference o for p in @params)),
+                          new Value new Literal 'arguments'
+      break
+    for param in @params
+      if param.isComplex()
+        val = ref = param.asReference o
+        val = new Op '?', ref, param.value if param.value
+        exprs.push new Assign new Value(param.name), val, '=', param: yes
+      else
+        ref = param
+        if param.value
+          lit = new Literal ref.name.value + ' == null'
+          val = new Assign new Value(param.name), param.value, '='
+          exprs.push new If lit, val
+      params.push ref unless splats
+    wasEmpty = @body.isEmpty()
+    exprs.unshift splats if splats
+    @body.expressions.unshift exprs... if exprs.length
+    for p, i in params
+      params[i] = p.compileToFragments o
+      o.scope.parameter fragmentsToText params[i]
+    uniqs = []
+    @eachParamName (name, node) ->
+      node.error "multiple parameters named '#{name}'" if name in uniqs
+      uniqs.push name
+    @body.makeReturn() unless wasEmpty or @noReturn
+    if @bound
+      if o.scope.parent.method?.bound
+        @bound = @context = o.scope.parent.method.context
+      else if not @static
+        o.scope.parent.assign '_this', 'this'
+    idt   = o.indent
+    code  = 'function'
+    code  += ' ' + @name if @ctor
+    code  += '('
+    answer = [@makeCode(code)]
+    for p, i in params
+      if i then answer.push @makeCode ", "
+      answer.push p...
+    answer.push @makeCode ') {'
+    answer = answer.concat(@makeCode("\n"), @body.compileWithDeclarations(o), @makeCode("\n#{@tab}")) unless @body.isEmpty()
+    answer.push @makeCode '}'
+
+    return [@makeCode(@tab), answer...] if @ctor
+    if @front or (o.level >= LEVEL_ACCESS) then @wrapInBraces answer else answer
+
+    # @body.traverseChildren(false, (c) ->
+    #   console.log c
+    # )
+
+#### Call
+
+# Node for a function invocation. Takes care of converting `super()` calls into
+# calls against the prototype's function of the same name.
+exports.Await = class Await extends Base
+  constructor: (@args = []) ->
+
+  children: ['args']
+
+  # 'Await' nodes do not compile. They are instead transformed into promise
+  # chains by the AsyncCode nodes.
+  compileNode: (o) ->
+    @error("'await' keyword can only appear in 'async' functions.")
+
+  hasAwait: () ->
+    true
 
 #### Param
 

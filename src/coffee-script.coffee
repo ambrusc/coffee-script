@@ -33,7 +33,7 @@ exports.compile = compile = (code, options = {}) ->
   if options.sourceMap
     map = new SourceMap
 
-  fragments = parser.parse(lexer.tokenize code, options).compileToFragments options
+  fragments = parser.parse(lexer.tokenize code, options).asyncTransform().compileToFragments options
 
   currentLine = 0
   currentLine += 1 if options.header
@@ -76,9 +76,9 @@ exports.tokens = (code, options) ->
 # or traverse it by using `.traverseChildren()` with a callback.
 exports.nodes = (source, options) ->
   if typeof source is 'string'
-    parser.parse lexer.tokenize source, options
+    (parser.parse lexer.tokenize source, options).asyncTransform()
   else
-    parser.parse source
+    (parser.parse source).asyncTransform()
 
 # Compile and execute a string of CoffeeScript (on the server), correctly
 # setting `__filename`, `__dirname`, and relative `require()`.
