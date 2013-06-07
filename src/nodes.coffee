@@ -18,7 +18,6 @@ class AsyncTransformState
     @promise = null
     @block = null
     @scopeVars = []
-    console.log "creating transform state"
 
   _getOrCreateBlock: () ->
     if not @block
@@ -28,20 +27,18 @@ class AsyncTransformState
       @promise = new Call val, [new Code(params, @block)]
     @block
 
-  pushPromise: (promise, isBare = false) ->
+  pushPromise: (promise) ->
     if @promise
       @pushExpression promise
     else
       @promise = promise
     @block = null
-    console.log "pushing PROMISE #{promise.constructor.name}"
     new Value new Literal "_res_"
 
   pushExpression: (exp) ->
     if not @promise
       @promise = new Call new Literal("Promise.as"), [new Literal("null")]
     @_getOrCreateBlock().push exp
-    console.log "pushing expression #{exp.constructor.name}"
 
 # Functions required by parser
 exports.extend = extend
@@ -236,11 +233,9 @@ exports.Base = class Base
     hasAwait = false
     @traverseChildren false, (c) ->
       hasAwait |= (c instanceof Await)
-    console.log "HA aw #{hasAwait}"
     hasAwait
 
   asyncTransform: () ->
-    console.log "ASYNC TRANFORM CALLED ON #{@constructor.name}"
     @eachChild (c) =>
       c.asyncTransform()
 
@@ -1522,7 +1517,6 @@ exports.AsyncCode = class AsyncCode extends Code
     state = new AsyncTransformState
     @body = new Block [@body.innerAsyncTransform state]
     @asyncScope = state.scopeVars
-    console.log "SCOPE #{@asyncScope}"
 
 #### Await
 

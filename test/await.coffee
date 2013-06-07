@@ -1,143 +1,71 @@
-# fs = require("promised-io/fs")
-# p = require("promised-io/promise")
+fs = require("promised-io/fs")
+Promise = require("promised-io/promise")
+defer = Promise.defer
 
-# a = true
-# b = false
+# This function is included in the latest version version promised-io on github
+Promise.as = (val) ->
+    p = defer()
+    p.resolve(val)
+    p
 
-# p.delay(500)
-#     .then (res) ->
-#         console.log "hello"
-#         throw "foo"
-#         a
-#     .then (res) ->
-#         console.log res
-#     , (err) ->
-#         console.log err
+delayValue = async (val) ->
+    await Promise.delay 100
+    val
 
+# Async blocks undergo a transformation to promises with the same syntax and
+# semantics as in C# (http://msdn.microsoft.com/en-us/library/vstudio/hh156513.aspx)
+a = async (fname) ->
 
-# # a = async (fname) ->
-# #     contents = await fs.readFile(fname)
-# #     console.log contents.toString()
-# #     await p.delay(500)
-# #     contents = await fs.readFile(fname)
-# #     console.log contents.toString()
+    # Simple await
+    t0 = +new Date
+    await Promise.delay 50
+    console.log "delayed for ", (+new Date - t0), "ms"
 
-# delay_return = async (time, val) ->
-#     await p.delay(time)
-#     val
+    # Simple assignment
+    val = await Promise.as "we just awaited our second promise"
+    console.log val
 
-# f = async (fname) ->
-#     if await promise_a or await promise_b
-#         await promise_c
-#     val_a = await func_a await promise_d
-    
-# f = async (fname) ->
-#     contents = await fs.readFile await delay_return(500, fname)
-#     console.log contents.toString()
-
-# b = () ->
-#     if k = true
-#         return 1
-# console.log b()
-
-
-# false or promise => promise
-# true or promise => true
-
-# Promise.as(bool or promise)
-
-# false and promise =>
-
-
-
-f = async (fname) ->
-    p = {}
-    unless not await promise_a or await promise_b
-        await promise_b
+    # Conditional await
+    if await Math.random() < 0.5
+        console.log "less than half"
     else
-        10
-    12
-    p.q = await promise_c await promise_d
+        console.log "GREATER than half"
 
-    # while await promise_a
-    #     console.log "foo"
+    # Logical composition
+    if await Promise.as(true) or await Promise.as(false) and await Promise.as(true)
+        console.log "cool conditions"
 
-    # if await promise_a
-    #     a = 1
-    #     await promise_b
-    #     b = 2
-    # else
-    #     c = 3
-    #     await promise_c
-    #     d = 4
-    # b = 2
+    # ...with parens
+    unless (await Promise.as(true) and await Promise.as(false)) or await Promise.as(false)
+        console.log "'unless' works too"
 
-    # (await promise_a or await promise_b) and await promise_c
-    # (not await promise_a) && (await promise_b && await promise_c)
-    # await promise_a and await promise_b and await promise_c
-    # (await promise_a and await promise_b) or await promise_c
-    if await promise_0
-        await promise_a
-        await promise_b
-    else if true
-        await promise_c
-        await promise_d
+    # complex awaits in conditionals
+    if false
+        console.log "we shouldn't really get here"
+        a = 12
+        await Promise.delay a
+        console.log 
+    else if await Promise.as false  # This part is pretty gnarly
+        console.log "not here either"
     else
-        await promise_e
-        await promise_f
-    true
+        console.log "we should definitely get here"
+        await Promise.delay 100
+        console.log "and wait a bit FIRST"
+        await Promise.delay 100
+        console.log "and maybe some MORE"
+    console.log "AND THEN get here. Cool eh?"
 
-    # await promise_a * (await promise_b + bool)
+    # Nested calls
+    console.log await delayValue await delayValue "doubly nested, just for kicks"
 
-    # bool or await promise
-    # funcy a = await promise, b = await promise
-    # funcy await promise, await promise
-    # await promise_a await promise_b, await promise_c
-    # funcy bool or await promise_b or bool and await promise_c await promise_a
-    # bool or await promise_b
-    # await promise_a or bool
-    # await promise_a or await promise_b
+    # A real example
+    contents = await fs.readFile fname  # TODO(Ambrus): why doesn't (await ...).toString() work?
+    lineCount = contents.toString().match(/\n/g).length + 1
+    console.log "this text file has #{lineCount} lines"
 
-    # # temp = await delay_return(500, fname)
-    # # contents = await fs.readFile temp
-    # await promise_z
-    # console.log "foo"
-    # # res_a = await promise_a await promise_b
-    # res_b = await promise_c await promise_e
-    # if await promise_d
-    #     console.log "bar"
-    # else
-    #     console.log "baz"
-    # # console.log res_a
+    # TODO: Why can't I define an async function in this body?
+    # TODO: Multiple, simultaneous awaits (e.g func(await param1, await param2))
+    # TODO: Try-Catch
+    # TODO: While and For loops
 
-    # await promise_a or await promise_b
-
-    # await promise_a or bool
-
-    # (bool or promise_b)
-
-    # await promise_c and await promise_d
-
-# g = (foo) ->
-#     promise_a
-#         .then (_temp_) ->
-#             return _temp_ or promise_b
-#             if _temp_
-#                 return true
-#             else
-#                 return promise_b
-#         .then (_temp_) ->
-#             _temp_
-#             return promise_c
-#         .then (_temp_) ->
-#             if _temp_
-#                 return promise_d
-#             else
-#                 return false
-#         .then (_temp_) ->
-#             _temp_
-
-    # if await promise_d or await promise_e
-    #     console.log res_b
-
-# a("test/await.coffee")
+a "test/await.coffee"
