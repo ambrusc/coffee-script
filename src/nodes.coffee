@@ -12,6 +12,37 @@ Error.stackTraceLimit = Infinity
 {compact, flatten, extend, merge, del, starts, ends, last, some,
 addLocationDataFn, locationDataToString, throwSyntaxError} = require './helpers'
 
+# For async transform
+class AsyncTransformState
+  constructor: () ->
+    @promise = null
+    @block = null
+    @scopeVars = []
+    console.log "creating transform state"
+
+  _getOrCreateBlock: () ->
+    if not @block
+      @block = new Block
+      val = new Value @promise, [new Access new Literal "then"]
+      params = if @promiseIsBare then [] else [new Param new Literal "_res_"]
+      @promise = new Call val, [new Code(params, @block)]
+    @block
+
+  pushPromise: (promise, isBare = false) ->
+    if @promise
+      @pushExpression promise
+    else
+      @promise = promise
+    @block = null
+    console.log "pushing PROMISE #{promise.constructor.name}"
+    new Value new Literal "_res_"
+
+  pushExpression: (exp) ->
+    if not @promise
+      @promise = new Call new Literal("Promise.as"), [new Literal("null")]
+    @_getOrCreateBlock().push exp
+    console.log "pushing expression #{exp.constructor.name}"
+
 # Functions required by parser
 exports.extend = extend
 exports.addLocationDataFn = addLocationDataFn
@@ -201,6 +232,30 @@ exports.Base = class Base
       answer = answer.concat fragments
     answer
 
+  anyChildIsAwait: () ->
+    hasAwait = false
+    @traverseChildren false, (c) ->
+      hasAwait |= (c instanceof Await)
+    console.log "HA aw #{hasAwait}"
+    hasAwait
+
+  asyncTransform: () ->
+    console.log "ASYNC TRANFORM CALLED ON #{@constructor.name}"
+    @eachChild (c) =>
+      c.asyncTransform()
+
+  innerAsyncTransform: (state) ->
+    for attr in @children when @[attr]
+      c = @[attr]
+      if c instanceof Array
+        @[attr] = c.map (ic) -> ic.innerAsyncTransform state
+        # @error "fucking arrays #{@constructor.name}.#{attr} - #{c}"
+      else
+        @[attr] = c.innerAsyncTransform state
+      if @[attr] is undefined
+        @error "undefined #{@constructor.name}.#{attr} - #{c}"
+    this
+
 #### Block
 
 # The block is the list of expressions that forms the body of an
@@ -355,6 +410,26 @@ exports.Block = class Block extends Base
       else if fragments.length and post.length
         fragments.push @makeCode "\n"
     fragments.concat post
+
+  innerAsyncTransform: (state) ->
+    if not @anyChildIsAwait()
+      return this
+    innerState = new AsyncTransformState
+    innerState.scopeVars = state.scopeVars
+    for exp in @expressions
+      innerState.pushExpression exp.innerAsyncTransform innerState
+    # Strip the last return if it's extraneous
+    if innerState.promise instanceof Call and
+       innerState.promise.args?.length == 1 and
+       innerState.promise.args[0] instanceof Code and
+       innerState.promise.args[0].body?.expressions?.length == 1
+      lastCall = innerState.promise.args[0].body.expressions[0]
+      if lastCall instanceof Value and
+         (not lastCall.properties or lastCall.properties.length == 0) and
+         lastCall.base instanceof Literal and
+         lastCall.base.value == "_res_"
+        innerState.promise = innerState.promise.variable.base
+    innerState.promise
 
   # Wrap up the given nodes as a **Block**, unless it already happens
   # to be one.
@@ -543,6 +618,10 @@ exports.Value = class Value extends Base
           snd.base = ref
         return new If new Existence(fst), snd, soak: on
       no
+
+  innerAsyncTransform: (state) ->
+    @base.innerAsyncTransform state
+    this
 
 #### Comment
 
@@ -1263,6 +1342,13 @@ exports.Assign = class Assign extends Base
     answer = [].concat @makeCode("[].splice.apply(#{name}, [#{fromDecl}, #{to}].concat("), valDef, @makeCode(")), "), valRef
     if o.level > LEVEL_TOP then @wrapInBraces answer else answer
 
+  innerAsyncTransform: (state) ->
+    super
+    # Pull all variables declared in promises out to the AsyncCode block
+    if @variable.base?.value?
+      state.scopeVars.push @variable.base.value
+    this
+
 #### Code
 
 # A function definition. This is the only node that creates a new Scope.
@@ -1353,6 +1439,107 @@ exports.Code = class Code extends Base
   # unless `crossScope` is `true`.
   traverseChildren: (crossScope, func) ->
     super(crossScope, func) if crossScope
+
+#### AsyncCode
+
+# A function definition. This is the only node that creates a new Scope.
+# When for the purposes of walking the contents of a function body, the Code
+# has no *children* -- they're within the inner scope.
+exports.AsyncCode = class AsyncCode extends Code
+  constructor: (params, body, tag) ->
+    super
+    @asyncScope = null
+
+  # TODO(Ambrus): this is a gross copy-paste of the super implementation with a
+  # small but important change (see TODO below)
+  compileNode: (o) ->
+    o.scope         = new Scope o.scope, @body, this
+    o.scope.shared  = del(o, 'sharedScope')
+    o.indent        += TAB
+    delete o.bare
+    delete o.isExistentialEquals
+    params = []
+    exprs  = []
+
+    # TODO(Ambrus): find a better way to integrate this
+    # pull out all async variables
+    for varname in @asyncScope
+      o.scope.find(varname)
+
+    @eachParamName (name) -> # this step must be performed before the others
+      unless o.scope.check name then o.scope.parameter name
+    for param in @params when param.splat
+      for {name: p} in @params
+        if p.this then p = p.properties[0].name
+        if p.value then o.scope.add p.value, 'var', yes
+      splats = new Assign new Value(new Arr(p.asReference o for p in @params)),
+                          new Value new Literal 'arguments'
+      break
+    for param in @params
+      if param.isComplex()
+        val = ref = param.asReference o
+        val = new Op '?', ref, param.value if param.value
+        exprs.push new Assign new Value(param.name), val, '=', param: yes
+      else
+        ref = param
+        if param.value
+          lit = new Literal ref.name.value + ' == null'
+          val = new Assign new Value(param.name), param.value, '='
+          exprs.push new If lit, val
+      params.push ref unless splats
+    wasEmpty = @body.isEmpty()
+    exprs.unshift splats if splats
+    @body.expressions.unshift exprs... if exprs.length
+    for p, i in params
+      params[i] = p.compileToFragments o
+      o.scope.parameter fragmentsToText params[i]
+    uniqs = []
+    @eachParamName (name, node) ->
+      node.error "multiple parameters named '#{name}'" if name in uniqs
+      uniqs.push name
+    @body.makeReturn() unless wasEmpty or @noReturn
+    if @bound
+      if o.scope.parent.method?.bound
+        @bound = @context = o.scope.parent.method.context
+      else if not @static
+        o.scope.parent.assign '_this', 'this'
+    idt   = o.indent
+    code  = 'function'
+    code  += ' ' + @name if @ctor
+    code  += '('
+    answer = [@makeCode(code)]
+    for p, i in params
+      if i then answer.push @makeCode ", "
+      answer.push p...
+    answer.push @makeCode ') {'
+    answer = answer.concat(@makeCode("\n"), @body.compileWithDeclarations(o), @makeCode("\n#{@tab}")) unless @body.isEmpty()
+    answer.push @makeCode '}'
+
+    return [@makeCode(@tab), answer...] if @ctor
+    if @front or (o.level >= LEVEL_ACCESS) then @wrapInBraces answer else answer
+
+  asyncTransform: () ->
+    state = new AsyncTransformState
+    @body = new Block [@body.innerAsyncTransform state]
+    @asyncScope = state.scopeVars
+    console.log "SCOPE #{@asyncScope}"
+
+#### Await
+
+# Node for a function invocation. Takes care of converting `super()` calls into
+# calls against the prototype's function of the same name.
+exports.Await = class Await extends Base
+  constructor: (@exp) ->
+
+  isStatement: NO
+
+  children: ['exp']
+
+  compileNode: (o) ->
+    @error "Unsupported use of await"
+
+  innerAsyncTransform: (state) ->
+    state.pushPromise @exp.innerAsyncTransform state
 
 #### Param
 
@@ -1523,6 +1710,9 @@ exports.While = class While extends Base
       answer.push @makeCode "\n#{@tab}return #{rvar};"
     answer
 
+  innerAsyncTransform: (state) ->
+    @error "while loops are not yet supported"
+
 #### Op
 
 # Simple Arithmetic and logical operations. Performs some conversion from
@@ -1672,6 +1862,19 @@ exports.Op = class Op extends Base
 
   toString: (idt) ->
     super idt, @constructor.name + ' ' + @operator
+
+  innerAsyncTransform: (state) ->
+    if @operator in ['&&', '||']
+      @first = @first.innerAsyncTransform state
+      if @second instanceof Await
+        @second = @second.exp
+        state.pushPromise this
+      else
+        super
+    else
+      super
+    # for exp in @expressions
+    #   exp.innerAsyncTransform state
 
 #### In
 exports.In = class In extends Base
@@ -2060,6 +2263,14 @@ exports.If = class If extends Base
 
   unfoldSoak: ->
     @soak and this
+
+  innerAsyncTransform: (state) ->
+    doPush = @body?.anyChildIsAwait() or @elseBody?.anyChildIsAwait()
+    super
+    if doPush
+      state.pushPromise this
+    else
+      this
 
 # Faux-Nodes
 # ----------

@@ -33,6 +33,7 @@ BANNER = '''
 
 # The list of all the valid option flags that `coffee` knows how to handle.
 SWITCHES = [
+  ['-a', '--async',           'print out the parse tree after async transforms']
   ['-b', '--bare',            'compile without a top-level function wrapper']
   ['-c', '--compile',         'compile to JavaScript and save as .js files']
   ['-e', '--eval',            'pass a string from the command line as input']
@@ -121,6 +122,7 @@ compileScript = (file, input, base=null) ->
     CoffeeScript.emit 'compile', task
     if      o.tokens      then printTokens CoffeeScript.tokens t.input, t.options
     else if o.nodes       then printLine CoffeeScript.nodes(t.input, t.options).toString().trim()
+    else if o.async       then printLine CoffeeScript.transformed_nodes(t.input, t.options).toString().trim()
     else if o.run         then CoffeeScript.run t.input, t.options
     else if o.join and t.file isnt o.join
       t.input = helpers.invertLiterate t.input if helpers.isLiterate file
