@@ -8,6 +8,7 @@ Promise.as = (val) ->
     p.resolve(val)
     p
 
+# Ignore for now
 delayValue = async (val) ->
     await Promise.delay 100
     val
@@ -26,7 +27,7 @@ a = async (fname) ->
     console.log val
 
     # Conditional await
-    if await Math.random() < 0.5
+    if await Promise.as Math.random() < 0.5
         console.log "less than half"
     else
         console.log "GREATER than half"
